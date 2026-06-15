@@ -1,10 +1,14 @@
 /** Parse an Indian-rupee-formatted amount string to a number, or null. */
 export function parseAmount(raw: string | null | undefined): number | null {
   if (raw == null) return null;
-  // Strip currency prefixes (₹, Rs., etc.) and whitespace, then remove commas
+  // Strip specific currency tokens (₹, Rs., Rs, INR) and thousands separators.
+  // Note: strip the literal tokens, NOT a generic "." — a generic dot strip
+  // would turn a bare ".50" into "50" (100x too large).
   const cleaned = raw
-    .replace(/^[\s₹Rs.]+/i, "")   // strip leading currency symbols/prefixes
-    .replace(/,/g, "")             // remove thousands separators
+    .replace(/₹/g, "")
+    .replace(/\bRs\.?/gi, "")
+    .replace(/\bINR\b/gi, "")
+    .replace(/,/g, "") // remove thousands separators
     .trim();
   if (cleaned === "" || cleaned === "-" || cleaned === ".") return null;
   const n = Number(cleaned);

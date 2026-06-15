@@ -3,7 +3,19 @@ import type { AppConfig } from "./config.js";
 import type { Claim, ExpenseHead } from "./types.js";
 import { parseAmount } from "./util/parse.js";
 import { waitForMarker } from "./navigation.js";
+import { captureAttachments } from "./attachments.js";
 import { log } from "./logger.js";
+
+/** A scraped claim plus the downloaded attachment bytes, keyed by `${expenseHead}::${filename}`. */
+export interface ExtractedClaim {
+  claim: Claim;
+  bytes: Map<string, Uint8Array>;
+}
+
+/** Build the bytes-map key for an attachment within a given expense head. */
+export function attachmentBytesKey(expenseHead: string, filename: string): string {
+  return `${expenseHead}::${filename}`;
+}
 
 /**
  * Read the value associated with a label inside the detail panel.
@@ -40,12 +52,15 @@ export function parseRowEmployee(rowText: string): { employeeName: string; emplo
   return { employeeName, employeeCode };
 }
 
-/** Open one task row and extract the claim header + all expense heads (without attachments). */
+/**
+ * Open one task row and extract the claim header + all expense heads, capturing each
+ * head's attachment bytes WHILE that head's panel is the rendered one.
+ */
 export async function extractClaim(
   taskTab: Page,
   row: Locator,
   cfg: AppConfig
-): Promise<Claim> {
+): Promise<ExtractedClaim> {
   const rowText = (await row.innerText().catch(() => "")) ?? "";
   const { employeeName, employeeCode } = parseRowEmployee(rowText);
 
@@ -56,24 +71,33 @@ export async function extractClaim(
   const totalRaw = await fieldValue(taskTab, cfg.selectors.TOTAL_CLAIMED_LABEL);
   const status = await fieldValue(taskTab, "Status");
 
+  const { heads, bytes } = await extractExpenseHeads(taskTab, cfg);
+
   const claim: Claim = {
     employeeCode,
     employeeName,
     totalClaimedAmount: parseAmount(totalRaw),
     status,
-    expenseHeads: [],
+    expenseHeads: heads,
   };
 
-  claim.expenseHeads = await extractExpenseHeads(taskTab, cfg);
-  log.info("claim extracted", { employeeCode, heads: claim.expenseHeads.length });
-  return claim;
+  log.info("claim extracted", { employeeCode, heads: heads.length });
+  return { claim, bytes };
 }
 
-/** Loop expense-head links and extract the 14 fields for each. */
-export async function extractExpenseHeads(taskTab: Page, cfg: AppConfig): Promise<ExpenseHead[]> {
+/**
+ * Loop expense-head links: for each, render its panel, extract the 14 fields, and capture
+ * THAT head's attachments before moving to the next head. Returns the heads plus a bytes-map
+ * keyed by `${expenseHead}::${filename}` so callers can persist each file under the right head.
+ */
+export async function extractExpenseHeads(
+  taskTab: Page,
+  cfg: AppConfig
+): Promise<{ heads: ExpenseHead[]; bytes: Map<string, Uint8Array> }> {
   const links = taskTab.locator(cfg.selectors.EXPENSE_HEAD_LINK);
   const count = await links.count();
   const heads: ExpenseHead[] = [];
+  const bytes = new Map<string, Uint8Array>();
 
   for (let i = 0; i < count; i++) {
     const link = links.nth(i);
@@ -83,6 +107,10 @@ export async function extractExpenseHeads(taskTab: Page, cfg: AppConfig): Promis
     await waitForMarker(taskTab, "Accounting Information").catch(() =>
       waitForMarker(taskTab, "Reimbursement Claim")
     );
+
+    // Capture this head's attachments while its panel is the rendered one.
+    const dls = await captureAttachments(taskTab, cfg);
+    for (const d of dls) bytes.set(attachmentBytesKey(headName, d.meta.filename), d.bytes);
 
     heads.push({
       expenseHead: headName,
@@ -99,8 +127,8 @@ export async function extractExpenseHeads(taskTab: Page, cfg: AppConfig): Promis
       claimAmount: parseAmount(await fieldValue(taskTab, "Claim Amount")),
       employeeComment: await fieldValue(taskTab, "Employee Comment"),
       approverComments: await fieldValue(taskTab, "Approver Comments"),
-      attachments: [],
+      attachments: dls.map((d) => d.meta),
     });
   }
-  return heads;
+  return { heads, bytes };
 }

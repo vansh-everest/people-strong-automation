@@ -7,8 +7,7 @@ import { JobStore } from "./jobs.js";
 import { ClaimStore } from "./storage.js";
 import { createContext, ensureSession, isLoggedIn, login } from "./session.js";
 import { openTaskTab, openQueue, taskRows } from "./navigation.js";
-import { extractClaim } from "./claims.js";
-import { captureAttachments } from "./attachments.js";
+import { extractClaim, attachmentBytesKey } from "./claims.js";
 import { withRetry } from "./util/retry.js";
 import { log } from "./logger.js";
 
@@ -56,22 +55,20 @@ export async function runScrape(
           await login(context, dashboard, cfg);
         }
 
-        claim = await withRetry(() => extractClaim(taskTab, row, cfg), RETRY);
+        const extracted = await withRetry(() => extractClaim(taskTab, row, cfg), RETRY);
+        claim = extracted.claim;
+        const bytes = extracted.bytes;
         await jobs.updateProgress(jobId, {
           processed,
           total: total || pending || rows.length,
           currentEmployee: claim.employeeCode,
         });
 
-        // Attachments per expense head (panel is the currently-rendered one).
-        for (const eh of claim.expenseHeads) {
-          const dls = await captureAttachments(taskTab, cfg);
-          eh.attachments = dls.map((d) => d.meta);
-          await claimStorePersist(claimStore, jobId, claim, dls);
-        }
-        if (claim.expenseHeads.length === 0) {
-          await claimStore.persistClaim(jobId, claim, async () => new Uint8Array());
-        }
+        // Persist the whole claim once; resolve each file's bytes by (head, filename).
+        // extractClaim already captured each head's attachments while its panel was rendered.
+        await claimStore.persistClaim(jobId, claim, async (att, eh) =>
+          bytes.get(attachmentBytesKey(eh.expenseHead, att.filename)) ?? new Uint8Array()
+        );
       } catch (err) {
         const msg = String(err);
         log.error("task failed", { err: msg });
@@ -106,17 +103,6 @@ export async function runScrape(
     await context.close();
     await browser.close();
   }
-}
-
-/** Persist a claim whose attachment bytes were captured this iteration. */
-async function claimStorePersist(
-  claimStore: ClaimStore,
-  jobId: string,
-  claim: Claim,
-  dls: { meta: { filename: string }; bytes: Uint8Array }[]
-): Promise<void> {
-  const byName = new Map(dls.map((d) => [d.meta.filename, d.bytes]));
-  await claimStore.persistClaim(jobId, claim, async (att) => byName.get(att.filename) ?? new Uint8Array());
 }
 
 async function screenshotOnFailure(

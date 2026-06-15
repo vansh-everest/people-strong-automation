@@ -15,6 +15,11 @@ describe("parseAmount", () => {
     expect(parseAmount("2,50,000.00")).toBe(250000);
     expect(parseAmount("450")).toBe(450);
   });
+  it("preserves decimals and bare leading-decimal values", () => {
+    expect(parseAmount("100.50")).toBe(100.5);
+    expect(parseAmount(".50")).toBe(0.5); // must NOT become 50
+    expect(parseAmount("Rs.500")).toBe(500);
+  });
   it("returns null for empty / non-numeric", () => {
     expect(parseAmount("")).toBeNull();
     expect(parseAmount("  -  ")).toBeNull();

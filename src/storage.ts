@@ -2,8 +2,12 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Claim, ExpenseHead, Attachment } from "./types.js";
 import { storagePath } from "./util/parse.js";
 
-/** Returns raw bytes for an attachment (download already performed by the scraper). */
-export type BytesFor = (att: Attachment) => Promise<Uint8Array>;
+/**
+ * Returns raw bytes for an attachment (download already performed by the scraper).
+ * Receives the owning expense head so callers can disambiguate identical filenames
+ * across different heads.
+ */
+export type BytesFor = (att: Attachment, eh: ExpenseHead) => Promise<Uint8Array>;
 
 export class ClaimStore {
   constructor(private client: SupabaseClient, private bucket: string) {}
@@ -72,7 +76,7 @@ export class ClaimStore {
     bytesFor: BytesFor
   ): Promise<void> {
     const path = storagePath(runId, claim.employeeCode, eh.expenseHead, att.filename);
-    const bytes = await bytesFor(att);
+    const bytes = await bytesFor(att, eh);
     const { error: upErr } = await this.client.storage
       .from(this.bucket)
       .upload(path, bytes, { upsert: true, contentType: "application/octet-stream" });
