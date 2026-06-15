@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: everest-peoplestrong-worker
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    disk:
+      name: storage
+      mountPath: /app/storage
+      sizeGB: 1
+    envVars:
+      - key: WORKER_SECRET
+        sync: false
+      - key: PEOPLESTRONG_USER
+        sync: false
+      - key: PEOPLESTRONG_PASS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: HEADLESS
+        value: "true"
