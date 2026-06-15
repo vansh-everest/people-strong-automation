@@ -1,0 +1,23 @@
+# URLs — fill BASE_URL/LOGIN_URL from the live portal.
+BASE_URL: "https://PLACEHOLDER.peoplestrong.com"
+LOGIN_URL: "https://PLACEHOLDER.peoplestrong.com/login"
+
+# Login selectors — UNKNOWN until inspected on the live login page. Fill these in.
+USERNAME_SELECTOR: "PLACEHOLDER_username_input"
+PASSWORD_SELECTOR: "PLACEHOLDER_password_input"
+LOGIN_BUTTON_SELECTOR: "PLACEHOLDER_login_button"
+
+# A DOM marker that is present ONLY when logged in (used for session-expiry detection).
+# e.g. the tasks icon. Override if a more reliable marker exists.
+LOGGED_IN_MARKER: ".mytasks_icon"
+
+# Pre-filled, override-able selector map (concrete from inspection).
+TASKS_ICON: ".mytasks_icon"
+QUEUE_TITLE_TEXT: "Reimbursement Claim Requests"
+TASK_LINK: "a[id*=ApproveRejectButton]"
+EXPENSE_HEAD_LINK: "a[id*=tableId]"
+ATTACHMENT_LINK: "a[id*=headAttachmentsList]"
+TOTAL_CLAIMED_LABEL: "Total Claimed Amount:"
+
+# Default stage filter (only rows whose text matches are processed).
+STAGE_FILTER: "Finance Manager Approval"
