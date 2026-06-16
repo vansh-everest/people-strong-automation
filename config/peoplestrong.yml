@@ -32,6 +32,8 @@ TASK_LINK: "a[id*=ApproveRejectButton]"
 EXPENSE_HEAD_LINK: "a[id*=tableId]"
 ATTACHMENT_LINK: "a[id*=headAttachmentsList]"
 TOTAL_CLAIMED_LABEL: "Total Claimed Amount:"
+# Opening a claim replaces the task list; this returns to it (the detail's "BACK").
+BACK_BUTTON: 'button[id*="cancel"]'
 
 # Default stage filter (only rows whose text matches are processed).
 STAGE_FILTER: "Finance Manager Approval"

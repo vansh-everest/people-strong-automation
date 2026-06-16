@@ -1,4 +1,4 @@
-import type { BrowserContext, Page, Locator } from "playwright";
+import type { BrowserContext, Page } from "playwright";
 import type { AppConfig } from "./config.js";
 import { log } from "./logger.js";
 
@@ -43,42 +43,83 @@ export async function openTaskTab(context: BrowserContext, cfg: AppConfig): Prom
   return taskTab;
 }
 
-/** Open the "Reimbursement Claim Requests" queue; return the pending count (or null). */
+/**
+ * Open the "Reimbursement Claim Requests" queue on the home.jsf dashboard.
+ *
+ * The Tasks badge is an Angular widget embedded in the JSF page; clicking it reveals
+ * a dropdown listing task queues. Clicking "Reimbursement Claim Requests" renders the
+ * PrimeFaces task table (rows = a[id*=ApproveRejectButton]). Returns the pending count
+ * shown on the Tasks badge (or null).
+ */
 export async function openQueue(taskTab: Page, cfg: AppConfig): Promise<number | null> {
-  const title = taskTab.getByText(cfg.selectors.QUEUE_TITLE_TEXT, { exact: false }).first();
-  await title.waitFor({ state: "visible", timeout: 20000 });
-
-  // pending-counts sits beside the title; read before clicking.
+  // Read the pending count off the Tasks badge (".notification" next to the icon).
   let pending: number | null = null;
   try {
-    const countText = await taskTab.locator("span.pending-counts").first().innerText();
-    const n = Number(countText.replace(/[^0-9]/g, ""));
+    const txt = await taskTab
+      .locator(`xpath=//*[contains(@class,"mytasks_icon")]/preceding-sibling::*[contains(@class,"notification")][1]`)
+      .first()
+      .innerText();
+    const n = Number(txt.replace(/[^0-9]/g, ""));
     pending = Number.isFinite(n) ? n : null;
   } catch {
     pending = null;
   }
 
+  // Reveal the tasks dropdown.
+  await taskTab
+    .locator(cfg.selectors.TASKS_ICON)
+    .first()
+    .locator("xpath=ancestor-or-self::*[self::a or self::button or self::div][1]")
+    .click({ timeout: 20000 });
+
+  // Click the queue title in the dropdown.
+  const title = taskTab.getByText(cfg.selectors.QUEUE_TITLE_TEXT, { exact: false }).first();
+  await title.waitFor({ state: "visible", timeout: 20000 });
   await title.click();
-  // Wait for the task list to render (the first task link, or an empty-state).
+
+  // Wait for the task table to render (or an empty queue).
   await taskTab
     .locator(cfg.selectors.TASK_LINK)
     .first()
     .waitFor({ state: "visible", timeout: 20000 })
-    .catch(() => log.warn("no task links after opening queue (empty queue?)"));
+    .catch(() => log.warn("no task rows after opening queue (empty?)"));
 
-  log.info("queue opened", { pending });
+  log.info("queue opened", { pending, rows: await taskTab.locator(cfg.selectors.TASK_LINK).count() });
   return pending;
 }
 
-/** All task-row links matching the stage filter text. */
-export async function taskRows(taskTab: Page, cfg: AppConfig): Promise<Locator[]> {
-  const links = taskTab.locator(cfg.selectors.TASK_LINK);
-  const count = await links.count();
-  const out: Locator[] = [];
-  for (let i = 0; i < count; i++) {
-    const link = links.nth(i);
-    const text = (await link.innerText().catch(() => "")) ?? "";
-    if (text.includes(cfg.stageFilter)) out.push(link);
-  }
-  return out;
+/** Number of task rows on the current page. */
+export async function rowCount(taskTab: Page, cfg: AppConfig): Promise<number> {
+  return taskTab.locator(cfg.selectors.TASK_LINK).count();
+}
+
+/**
+ * Return from a claim-detail view to the task list. Opening a claim replaces the list,
+ * so this clicks the detail's BACK button and waits for the task rows to re-render.
+ */
+export async function goBackToList(taskTab: Page, cfg: AppConfig): Promise<void> {
+  const back = taskTab.locator(cfg.selectors.BACK_BUTTON).first();
+  await back.waitFor({ state: "visible", timeout: 15000 });
+  await back.click();
+  await taskTab.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+  await taskTab
+    .locator(cfg.selectors.TASK_LINK)
+    .first()
+    .waitFor({ state: "visible", timeout: 15000 });
+}
+
+/**
+ * Advance to the next page of the PrimeFaces paginator if one exists and is enabled.
+ * Returns true if it advanced, false if already on the last page.
+ */
+export async function gotoNextPage(taskTab: Page): Promise<boolean> {
+  const next = taskTab.locator("a.ui-paginator-next").first();
+  if ((await next.count()) === 0) return false;
+  const cls = (await next.getAttribute("class")) ?? "";
+  if (/ui-state-disabled/.test(cls)) return false;
+  await next.click();
+  // PrimeFaces re-renders the table; brief settle on the datatable.
+  await taskTab.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+  await taskTab.locator('a[id*="ApproveRejectButton"]').first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+  return true;
 }

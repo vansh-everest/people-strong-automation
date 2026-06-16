@@ -6,25 +6,20 @@ import type { JobRecord } from "../src/types.js";
 function fakeJobStore() {
   const jobs = new Map<string, JobRecord>();
   let seq = 0;
-  return {
-    store: {
-      tryAcquire: vi.fn(() => true),
-      release: vi.fn(),
-      async create(input: any) {
-        const id = "job-" + ++seq;
-        const rec: JobRecord = {
-          id, status: "queued",
-          progress: { processed: 0, total: 0, currentEmployee: null },
-          results: null, error: null,
-          stageFilter: input.stageFilter, limit: input.limit,
-        };
-        jobs.set(id, rec);
-        return rec;
-      },
-      async get(id: string) { return jobs.get(id) ?? null; },
-    } as any,
-    jobs,
+  const store = {
+    tryAcquire: vi.fn(() => true),
+    release: vi.fn(),
+    create() {
+      const id = "job-" + ++seq;
+      const rec: JobRecord = { id, status: "running", processed: 0, total: 0, results: null, error: null };
+      jobs.set(id, rec);
+      return rec;
+    },
+    get(id: string) {
+      return jobs.get(id) ?? null;
+    },
   };
+  return { store, jobs };
 }
 
 describe("server", () => {
@@ -36,7 +31,12 @@ describe("server", () => {
   beforeEach(() => {
     runner = vi.fn().mockResolvedValue(undefined);
     jobStore = fakeJobStore();
-    app = buildApp({ workerSecret: SECRET, jobs: jobStore.store, runJob: runner, defaultStageFilter: "Finance Manager Approval" });
+    app = buildApp({
+      workerSecret: SECRET,
+      jobs: jobStore.store as never,
+      runJob: runner,
+      defaultStageFilter: "Finance Manager Approval",
+    });
   });
 
   it("GET /health needs no auth", async () => {
@@ -45,9 +45,10 @@ describe("server", () => {
     expect(res.body).toEqual({ status: "ok" });
   });
 
-  it("rejects missing/wrong secret", async () => {
+  it("rejects missing/wrong secret on both authed routes", async () => {
     expect((await request(app).post("/sync-claims")).status).toBe(401);
     expect((await request(app).post("/sync-claims").set("X-Worker-Secret", "nope")).status).toBe(401);
+    expect((await request(app).get("/job/x")).status).toBe(401);
   });
 
   it("POST /sync-claims returns jobId and invokes the runner", async () => {
@@ -58,6 +59,10 @@ describe("server", () => {
     expect(res.status).toBe(202);
     expect(res.body.jobId).toMatch(/^job-/);
     expect(runner).toHaveBeenCalledOnce();
+    expect(runner).toHaveBeenCalledWith(res.body.jobId, {
+      stageFilter: "Finance Manager Approval",
+      limit: 3,
+    });
   });
 
   it("409 when a job is already running", async () => {
@@ -66,12 +71,14 @@ describe("server", () => {
     expect(res.status).toBe(409);
   });
 
-  it("GET /job/:id returns status or 404", async () => {
+  it("GET /job/:id returns the platform-shaped job or 404", async () => {
     const created = await request(app).post("/sync-claims").set("X-Worker-Secret", SECRET).send({});
     const id = created.body.jobId;
     const ok = await request(app).get(`/job/${id}`).set("X-Worker-Secret", SECRET);
     expect(ok.status).toBe(200);
-    expect(ok.body.status).toBeDefined();
+    expect(ok.body.status).toBe("running");
+    expect(ok.body).toHaveProperty("processed");
+    expect(ok.body).toHaveProperty("total");
     const missing = await request(app).get("/job/nope").set("X-Worker-Secret", SECRET);
     expect(missing.status).toBe(404);
   });

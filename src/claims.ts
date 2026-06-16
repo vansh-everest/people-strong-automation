@@ -1,134 +1,136 @@
-import type { Page, Locator } from "playwright";
+import type { Page } from "playwright";
 import type { AppConfig } from "./config.js";
-import type { Claim, ExpenseHead } from "./types.js";
+import type { ClaimRecord } from "./types.js";
 import { parseAmount } from "./util/parse.js";
 import { waitForMarker } from "./navigation.js";
-import { captureAttachments } from "./attachments.js";
 import { log } from "./logger.js";
 
-/** A scraped claim plus the downloaded attachment bytes, keyed by `${expenseHead}::${filename}`. */
-export interface ExtractedClaim {
-  claim: Claim;
-  bytes: Map<string, Uint8Array>;
-}
-
-/** Build the bytes-map key for an attachment within a given expense head. */
-export function attachmentBytesKey(expenseHead: string, filename: string): string {
-  return `${expenseHead}::${filename}`;
+/** Raw structured data scraped from a rendered claim-detail panel. */
+interface DetailDump {
+  empCode: string | null;
+  empName: string | null;
+  totalClaimed: string | null;
+  rows: Record<string, string | null>[];
+  attachments: { filename: string; href: string | null }[];
 }
 
 /**
- * Read the value associated with a label inside the detail panel.
- * Strategy: find the element containing the label text, then read the text of the
- * following sibling / adjacent value cell. Falls back to null if not found.
+ * Read the rendered claim-detail panel (the right panel that PrimeFaces loads when a
+ * task row is clicked) and return one ClaimRecord per expense-head row in the
+ * "Claim Detail" table. Employee + total-claimed are claim-level and copied onto each.
+ *
+ * The detail uses a `<dl><dt><label>…</dt><dd>value</dd></dl>` field layout and stable
+ * value ids (hrReimbursementclaim:empCodeVal / empNameVal). Both the claim-detail table
+ * and the queue table use `td > div.m-data-header` to label each cell, so we read each
+ * cell by its header rather than by fragile column position.
  */
-export async function fieldValue(scope: Page | Locator, label: string): Promise<string | null> {
-  const labelEl = scope
-    .locator(`xpath=.//*[contains(normalize-space(.), ${xpathLiteral(label)})]`)
-    .first();
-  if ((await labelEl.count()) === 0) return null;
-  const value = labelEl
-    .locator(
-      "xpath=following-sibling::*[1] | ../following-sibling::*[1] | ../td[2] | ../../td[2]"
+export async function extractClaimRecords(taskTab: Page): Promise<ClaimRecord[]> {
+  const data: DetailDump = await taskTab.evaluate(() => {
+    const clean = (el: Element | null) =>
+      el ? (el.textContent || "").replace(/\s+/g, " ").trim() || null : null;
+    const byId = (id: string) => document.querySelector(`[id="${id}"]`);
+
+    const dlValue = (labelRe: RegExp): string | null => {
+      for (const dt of Array.from(document.querySelectorAll("dt"))) {
+        const label = dt.querySelector("label");
+        if (label && labelRe.test((label.textContent || "").trim())) {
+          const dd = dt.nextElementSibling;
+          if (dd && dd.tagName === "DD") return clean(dd);
+        }
+      }
+      return null;
+    };
+
+    const empCode = clean(byId("hrReimbursementclaim:empCodeVal"));
+    const empName = clean(byId("hrReimbursementclaim:empNameVal"));
+    const totalClaimed = dlValue(/Total Claimed Amount/i);
+
+    // Find the "Claim Detail" table (headers include Expense Head + Bill Number).
+    const rows: Record<string, string | null>[] = [];
+    for (const tbl of Array.from(document.querySelectorAll("table"))) {
+      const t = tbl.innerText || "";
+      if (/Expense Head/i.test(t) && /Bill Number/i.test(t)) {
+        for (const tr of Array.from(tbl.querySelectorAll("tbody tr"))) {
+          const rec: Record<string, string | null> = {};
+          for (const td of Array.from(tr.querySelectorAll("td"))) {
+            const header = td.querySelector(".m-data-header");
+            const key = header ? (header.textContent || "").replace(/\s+/g, " ").trim() : null;
+            if (!key) continue;
+            const headerText = header ? header.textContent || "" : "";
+            const value = (td.textContent || "")
+              .replace(headerText, "")
+              .replace(/\s+/g, " ")
+              .trim();
+            rec[key] = value || null;
+          }
+          if (Object.keys(rec).length) rows.push(rec);
+        }
+        break;
+      }
+    }
+
+    const attachments = Array.from(
+      document.querySelectorAll('a[id*="headAttachmentsList"], a[id*="Attachment"]')
     )
-    .first();
-  const txt = await value.innerText().catch(() => null);
-  return txt ? txt.trim() || null : null;
-}
+      .map((a) => ({ filename: (a.textContent || "").trim(), href: a.getAttribute("href") }))
+      .filter((a) => a.filename && !/upload/i.test(a.filename));
 
-/** Escape a string for use as an XPath string literal. */
-export function xpathLiteral(s: string): string {
-  if (!s.includes("'")) return `'${s}'`;
-  if (!s.includes('"')) return `"${s}"`;
-  return "concat('" + s.split("'").join("',\"'\",'") + "')";
-}
+    return { empCode, empName, totalClaimed, rows, attachments };
+  });
 
-/** Capture employee code + name from a task row's text before clicking it. */
-export function parseRowEmployee(rowText: string): { employeeName: string; employeeCode: string } {
-  // Rows commonly read like "Asha Rao (E12345) - Finance Manager Approval".
-  const codeMatch = rowText.match(/\(([A-Za-z0-9\-]+)\)/);
-  const employeeCode = codeMatch ? codeMatch[1] : rowText.trim();
-  const employeeName = codeMatch ? rowText.slice(0, codeMatch.index).trim() : rowText.trim();
-  return { employeeName, employeeCode };
-}
+  const totalClaimed = parseAmount(data.totalClaimed);
+  const att = data.attachments[0] ?? null;
 
-/**
- * Open one task row and extract the claim header + all expense heads, capturing each
- * head's attachment bytes WHILE that head's panel is the rendered one.
- */
-export async function extractClaim(
-  taskTab: Page,
-  row: Locator,
-  cfg: AppConfig
-): Promise<ExtractedClaim> {
-  const rowText = (await row.innerText().catch(() => "")) ?? "";
-  const { employeeName, employeeCode } = parseRowEmployee(rowText);
-
-  await row.click();
-  // PrimeFaces partial update — wait for the Total Claimed Amount label to render.
-  await waitForMarker(taskTab, cfg.selectors.TOTAL_CLAIMED_LABEL);
-
-  const totalRaw = await fieldValue(taskTab, cfg.selectors.TOTAL_CLAIMED_LABEL);
-  const status = await fieldValue(taskTab, "Status");
-
-  const { heads, bytes } = await extractExpenseHeads(taskTab, cfg);
-
-  const claim: Claim = {
-    employeeCode,
-    employeeName,
-    totalClaimedAmount: parseAmount(totalRaw),
-    status,
-    expenseHeads: heads,
+  const base = {
+    employee_code: data.empCode,
+    employee_name: data.empName,
+    total_claimed_amount: totalClaimed,
+    // attachment_url is left null: PrimeFaces attachment downloads are session-bound
+    // POSTs, not durable URLs. Filename is captured when present; durable storage of
+    // the file bytes is a follow-up (see README).
+    attachment_filename: att?.filename ?? null,
+    attachment_url: null as string | null,
   };
 
-  log.info("claim extracted", { employeeCode, heads: heads.length });
-  return { claim, bytes };
+  const records: ClaimRecord[] = data.rows.map((r) => ({
+    ...base,
+    expense_head: r["Expense Head"] ?? null,
+    bill_period: r["Bill Period"] ?? null,
+    bill_number: r["Bill Number"] ?? null,
+    start_date: r["Start Date"] ?? null,
+    end_date: r["End Date"] ?? null,
+    bill_date: r["Bill Date"] ?? null,
+    payment_mode: r["Payment Mode"] ?? null,
+    vendor: r["Vendor"] ?? null,
+    eligible_amount: parseAmount(r["Eligible Amount"] ?? null),
+    approval_amount: parseAmount(r["Approved Amount"] ?? r["Approval Amount"] ?? null),
+    claim_amount: parseAmount(r["Claim Amount"] ?? null),
+    employee_comment: r["Employee Comment"] ?? null,
+    approver_comments: r["Approver Comments"] ?? r["Approver Comment"] ?? null,
+  }));
+
+  // A claim with no expense-head rows still yields one record with claim-level info.
+  if (records.length === 0) {
+    records.push({
+      ...base,
+      expense_head: null, bill_period: null, bill_number: null,
+      start_date: null, end_date: null, bill_date: null,
+      payment_mode: null, vendor: null,
+      eligible_amount: null, approval_amount: null, claim_amount: null,
+      employee_comment: null, approver_comments: null,
+    });
+  }
+
+  log.info("claim extracted", { employeeCode: data.empCode, heads: records.length });
+  return records;
 }
 
 /**
- * Loop expense-head links: for each, render its panel, extract the 14 fields, and capture
- * THAT head's attachments before moving to the next head. Returns the heads plus a bytes-map
- * keyed by `${expenseHead}::${filename}` so callers can persist each file under the right head.
+ * Open the task row at `index` on the current queue page and wait for its detail panel
+ * to render (PrimeFaces loads it into the right panel via AJAX).
  */
-export async function extractExpenseHeads(
-  taskTab: Page,
-  cfg: AppConfig
-): Promise<{ heads: ExpenseHead[]; bytes: Map<string, Uint8Array> }> {
-  const links = taskTab.locator(cfg.selectors.EXPENSE_HEAD_LINK);
-  const count = await links.count();
-  const heads: ExpenseHead[] = [];
-  const bytes = new Map<string, Uint8Array>();
-
-  for (let i = 0; i < count; i++) {
-    const link = links.nth(i);
-    const headName = (await link.innerText().catch(() => `head-${i}`)).trim();
-    await link.click();
-    // Wait for the accounting/claim section to render.
-    await waitForMarker(taskTab, "Accounting Information").catch(() =>
-      waitForMarker(taskTab, "Reimbursement Claim")
-    );
-
-    // Capture this head's attachments while its panel is the rendered one.
-    const dls = await captureAttachments(taskTab, cfg);
-    for (const d of dls) bytes.set(attachmentBytesKey(headName, d.meta.filename), d.bytes);
-
-    heads.push({
-      expenseHead: headName,
-      expenseCategory: await fieldValue(taskTab, "Expense Category"),
-      billPeriod: await fieldValue(taskTab, "Bill Period"),
-      billNumber: await fieldValue(taskTab, "Bill Number"),
-      startDate: await fieldValue(taskTab, "Start Date"),
-      endDate: await fieldValue(taskTab, "End Date"),
-      billDate: await fieldValue(taskTab, "Bill Date"),
-      paymentMode: await fieldValue(taskTab, "Payment Mode"),
-      vendor: await fieldValue(taskTab, "Vendor"),
-      eligibleAmount: parseAmount(await fieldValue(taskTab, "Eligible Amount")),
-      approvalAmount: parseAmount(await fieldValue(taskTab, "Approval Amount")),
-      claimAmount: parseAmount(await fieldValue(taskTab, "Claim Amount")),
-      employeeComment: await fieldValue(taskTab, "Employee Comment"),
-      approverComments: await fieldValue(taskTab, "Approver Comments"),
-      attachments: dls.map((d) => d.meta),
-    });
-  }
-  return { heads, bytes };
+export async function openClaim(taskTab: Page, cfg: AppConfig, index: number): Promise<void> {
+  await taskTab.locator(cfg.selectors.TASK_LINK).nth(index).click();
+  await taskTab.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
+  await waitForMarker(taskTab, cfg.selectors.TOTAL_CLAIMED_LABEL);
 }

@@ -15,9 +15,5 @@ services:
         sync: false
       - key: PEOPLESTRONG_PASS
         sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_KEY
-        sync: false
       - key: HEADLESS
         value: "true"

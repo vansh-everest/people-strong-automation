@@ -1,80 +1,49 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { JobStore } from "../src/jobs.js";
+import type { ClaimRecord } from "../src/types.js";
 
-function makeMockClient() {
-  const store = new Map<string, any>();
-  let idSeq = 0;
-  const client: any = {
-    from(table: string) {
-      if (table !== "sync_jobs") throw new Error("unexpected table " + table);
-      return {
-        insert(row: any) {
-          return {
-            select() {
-              return {
-                async single() {
-                  const id = "job-" + ++idSeq;
-                  const rec = { id, ...row };
-                  store.set(id, rec);
-                  return { data: rec, error: null };
-                },
-              };
-            },
-          };
-        },
-        update(patch: any) {
-          return {
-            async eq(_col: string, id: string) {
-              const rec = store.get(id);
-              if (rec) store.set(id, { ...rec, ...patch });
-              return { data: null, error: null };
-            },
-          };
-        },
-        select(_cols: string) {
-          return {
-            eq(_col: string, id: string) {
-              return {
-                async single() {
-                  return { data: store.get(id) ?? null, error: null };
-                },
-              };
-            },
-          };
-        },
-      };
-    },
-  };
-  return { client, store };
-}
+const rec = (code: string): ClaimRecord =>
+  ({ employee_code: code } as ClaimRecord);
 
-describe("JobStore", () => {
-  it("creates a queued job", async () => {
-    const { client } = makeMockClient();
-    const store = new JobStore(client);
-    const job = await store.create({ stageFilter: "Finance Manager Approval", limit: 5 });
-    expect(job.status).toBe("queued");
-    expect(job.id).toMatch(/^job-/);
-    expect(job.stageFilter).toBe("Finance Manager Approval");
+describe("JobStore (in-memory)", () => {
+  it("creates a running job with a uuid", () => {
+    const s = new JobStore();
+    const j = s.create();
+    expect(j.status).toBe("running");
+    expect(j.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(s.get(j.id)?.status).toBe("running");
   });
 
-  it("transitions status and progress", async () => {
-    const { client } = makeMockClient();
-    const store = new JobStore(client);
-    const job = await store.create({ stageFilter: null, limit: null });
-    await store.markRunning(job.id);
-    await store.updateProgress(job.id, { processed: 2, total: 10, currentEmployee: "E1" });
-    const fetched = await store.get(job.id);
-    expect(fetched!.status).toBe("running");
-    expect(fetched!.progress.processed).toBe(2);
+  it("tracks progress and completes with results", () => {
+    const s = new JobStore();
+    const j = s.create();
+    s.setProgress(j.id, 2, 10);
+    expect(s.get(j.id)?.processed).toBe(2);
+    expect(s.get(j.id)?.total).toBe(10);
+    s.markDone(j.id, [rec("E1"), rec("E2")]);
+    const done = s.get(j.id)!;
+    expect(done.status).toBe("done");
+    expect(done.results?.length).toBe(2);
+    expect(done.total).toBe(2);
   });
 
-  it("blocks a second concurrent run while one is active", async () => {
-    const { client } = makeMockClient();
-    const store = new JobStore(client);
-    expect(store.tryAcquire()).toBe(true);
-    expect(store.tryAcquire()).toBe(false);
-    store.release();
-    expect(store.tryAcquire()).toBe(true);
+  it("markError sets error status + message", () => {
+    const s = new JobStore();
+    const j = s.create();
+    s.markError(j.id, "boom");
+    expect(s.get(j.id)?.status).toBe("error");
+    expect(s.get(j.id)?.error).toBe("boom");
+  });
+
+  it("returns null for unknown job", () => {
+    expect(new JobStore().get("nope")).toBeNull();
+  });
+
+  it("single-job guard blocks a second concurrent acquire", () => {
+    const s = new JobStore();
+    expect(s.tryAcquire()).toBe(true);
+    expect(s.tryAcquire()).toBe(false);
+    s.release();
+    expect(s.tryAcquire()).toBe(true);
   });
 });
