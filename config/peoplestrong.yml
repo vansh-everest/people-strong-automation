@@ -1,17 +1,31 @@
-# URLs — fill BASE_URL/LOGIN_URL from the live portal.
-BASE_URL: "https://PLACEHOLDER.peoplestrong.com"
-LOGIN_URL: "https://PLACEHOLDER.peoplestrong.com/login"
+# ── PeopleStrong portal config (Everest tenant) ──────────────────────────────
+# Login is a classic HTML/JSF page; after login the landing app is Flutter/CanvasKit
+# (NOT scrapable). The scrapable PrimeFaces task app is reached via the deeplink
+# bridge below, which establishes the legacy JSF session and redirects to home.jsf.
 
-# Login selectors — UNKNOWN until inspected on the live login page. Fill these in.
-USERNAME_SELECTOR: "PLACEHOLDER_username_input"
-PASSWORD_SELECTOR: "PLACEHOLDER_password_input"
-LOGIN_BUTTON_SELECTOR: "PLACEHOLDER_login_button"
+BASE_URL: "https://everestfleet.peoplestrong.com"
+# The site root 302-redirects to /altLogin.jsf (the HTML login form).
+LOGIN_URL: "https://everestfleet.peoplestrong.com/"
 
-# A DOM marker that is present ONLY when logged in (used for session-expiry detection).
-# e.g. the tasks icon. Override if a more reliable marker exists.
-LOGGED_IN_MARKER: ".mytasks_icon"
+# Login form selectors (verified live on altLogin.jsf).
+USERNAME_SELECTOR: 'input[id*="username"]'
+PASSWORD_SELECTOR: 'input[id="loginForm:password"]'
+LOGIN_BUTTON_SELECTOR: 'button[id*="loginButton"]'
 
-# Pre-filled, override-able selector map (concrete from inspection).
+# Deeplink bridge: open this in a NEW TAB after login. It hands the Keycloak/oneweb
+# session into the legacy JSF app and redirects to home.jsf?cid=<n>#/home (the
+# PrimeFaces task dashboard). Using the bridge avoids hardcoding a session-bound cid.
+TASK_PAGE_URL: "https://everestfleet.peoplestrong.com/secureSloginDeeplinkKeycloak.jsf"
+
+# DOM marker present on the HTML login form → used to detect we are NOT logged in.
+LOGIN_FORM_MARKER: 'input[id*="username"]'
+# DOM marker present on the legacy JSF task dashboard once it has loaded.
+TASK_PAGE_MARKER: ".mytasks_icon"
+
+# ── Downstream task/claim selectors (PrimeFaces) ─────────────────────────────
+# Carried over from the original spec; to be verified against the live task list
+# in the next step. PrimeFaces row ids contain changing numbers — always use
+# substring id selectors (a[id*=...]), never hardcoded indices.
 TASKS_ICON: ".mytasks_icon"
 QUEUE_TITLE_TEXT: "Reimbursement Claim Requests"
 TASK_LINK: "a[id*=ApproveRejectButton]"

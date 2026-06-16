@@ -38,7 +38,7 @@ export async function runScrape(
       onRetry: (a, e) => log.warn("ensureSession retry", { a, e: String(e) }),
     });
 
-    const taskTab = await withRetry(() => openTaskTab(context, dashboard, cfg), RETRY);
+    const taskTab = await withRetry(() => openTaskTab(context, cfg), RETRY);
     const pending = await openQueue(taskTab, cfg);
 
     let rows = await taskRows(taskTab, cfg);

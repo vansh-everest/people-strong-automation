@@ -4,3 +4,7 @@ storage/
 .env.local
 *.log
 dist/
+
+# local live-portal inspection scratch scripts (never commit; may contain run notes)
+inspect-login.mjs
+verify-flow.mjs

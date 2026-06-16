@@ -16,25 +16,29 @@ export async function waitForMarker(page: Page, marker: string, timeout = 20000)
 }
 
 /**
- * Click the Tasks icon on the Angular dashboard and capture the NEW TAB it opens.
- * Returns the new PrimeFaces task tab.
+ * Open the legacy PrimeFaces task app in a NEW TAB.
+ *
+ * After login the landing app is Flutter (not scrapable). The scrapable JSF task
+ * dashboard is reached via the deeplink bridge (TASK_PAGE_URL), which establishes
+ * the legacy JSF session and redirects to home.jsf?cid=<n>#/home. We open it in a
+ * fresh tab in the same (authenticated) context. Throws if the JSF session is not
+ * established (the bridge bounces to sessionTimeout/altLogin) so the caller can
+ * re-login and retry.
  */
-export async function openTaskTab(
-  context: BrowserContext,
-  dashboard: Page,
-  cfg: AppConfig
-): Promise<Page> {
-  const icon = dashboard.locator(cfg.selectors.TASKS_ICON);
-  await icon.first().waitFor({ state: "visible", timeout: 20000 });
-  const clickable = icon
-    .first()
-    .locator("xpath=ancestor-or-self::*[self::a or self::button or self::div][1]");
+export async function openTaskTab(context: BrowserContext, cfg: AppConfig): Promise<Page> {
+  const taskTab = await context.newPage();
+  await taskTab.goto(cfg.selectors.TASK_PAGE_URL, {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
+  await taskTab.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 
-  const [taskTab] = await Promise.all([
-    context.waitForEvent("page"),
-    clickable.click(),
-  ]);
-  await taskTab.waitForLoadState();
+  if (/sessionTimeout|altLogin/i.test(taskTab.url())) {
+    await taskTab.close().catch(() => {});
+    throw new Error(`JSF session not established (landed on ${taskTab.url()})`);
+  }
+
+  await taskTab.waitForSelector(cfg.selectors.TASK_PAGE_MARKER, { timeout: 30000 });
   log.info("task tab opened", { url: taskTab.url() });
   return taskTab;
 }
