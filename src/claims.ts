@@ -130,7 +130,16 @@ export async function extractClaimRecords(taskTab: Page): Promise<ClaimRecord[]>
  * to render (PrimeFaces loads it into the right panel via AJAX).
  */
 export async function openClaim(taskTab: Page, cfg: AppConfig, index: number): Promise<void> {
-  await taskTab.locator(cfg.selectors.TASK_LINK).nth(index).click();
+  const link = taskTab.locator(cfg.selectors.TASK_LINK).nth(index);
+  await link.waitFor({ state: "visible", timeout: 20000 });
+  await link.scrollIntoViewIfNeeded().catch(() => {});
+  // Let any PrimeFaces AJAX overlay/spinner clear so the click actually lands.
+  await taskTab
+    .locator(".ui-blockui, .ui-blockui-content, #ajaxStatusPanel")
+    .first()
+    .waitFor({ state: "hidden", timeout: 5000 })
+    .catch(() => {});
+  await link.click({ timeout: 15000 });
   await taskTab.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
   await waitForMarker(taskTab, cfg.selectors.TOTAL_CLAIMED_LABEL);
 }

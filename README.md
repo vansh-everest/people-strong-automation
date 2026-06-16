@@ -43,12 +43,16 @@ matching the platform's `lib/reimbursement/types.ts`:
 
 All waits are on DOM markers (PrimeFaces AJAX), never blind sleeps.
 
+## Pagination & resilience
+
+The queue is paginated (~14 rows/page). Opening a claim replaces the list and **BACK resets the paginator
+to page 1**, so for every claim the worker re-navigates to its page (`gotoPage`) before opening it. A full
+run walks all pages (verified live: 49 claims → 66 records across 4 pages). One bad/slow claim is logged
+and skipped — it never aborts the job (the live portal occasionally times out a row click; a rare run may
+return a slightly low count, so re-run if the total looks short).
+
 ## Known limitations / follow-ups
 
-- **Pagination:** only the first queue page (~14 rows) is processed. The full pending set (e.g. 49) spans
-  pages; because opening a claim resets the list, cross-page iteration must re-navigate to the right page
-  after each BACK (logged as a warning; needs a live check of whether BACK preserves the paginator page).
-  Use `limit` ≤ page size for reliable runs today.
 - **Attachments:** `attachment_filename` is captured when present; `attachment_url` is `null`. PrimeFaces
   attachment downloads are session-bound POSTs, not durable URLs — producing a durable URL needs a storage
   decision (e.g. upload bytes somewhere and return that URL).

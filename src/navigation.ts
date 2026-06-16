@@ -108,18 +108,39 @@ export async function goBackToList(taskTab: Page, cfg: AppConfig): Promise<void>
     .waitFor({ state: "visible", timeout: 15000 });
 }
 
+/** Number of pages in the task-table paginator (≥ 1). */
+export async function pageCount(taskTab: Page): Promise<number> {
+  const n = await taskTab.locator(".ui-paginator-page").count().catch(() => 0);
+  return Math.max(1, n);
+}
+
 /**
- * Advance to the next page of the PrimeFaces paginator if one exists and is enabled.
- * Returns true if it advanced, false if already on the last page.
+ * Jump the PrimeFaces paginator to a specific 1-based page. No-op if already there.
+ * Used because opening a claim resets the list to page 1, so we re-navigate to the
+ * claim's page after each BACK. Falls back to clicking "next" if the numbered button
+ * isn't directly shown.
  */
-export async function gotoNextPage(taskTab: Page): Promise<boolean> {
-  const next = taskTab.locator("a.ui-paginator-next").first();
-  if ((await next.count()) === 0) return false;
-  const cls = (await next.getAttribute("class")) ?? "";
-  if (/ui-state-disabled/.test(cls)) return false;
-  await next.click();
-  // PrimeFaces re-renders the table; brief settle on the datatable.
+export async function gotoPage(taskTab: Page, pageNum: number): Promise<void> {
+  const activeText = async () =>
+    (await taskTab.locator(".ui-paginator-page.ui-state-active").first().textContent().catch(() => null))?.trim() ?? null;
+
+  if ((await activeText()) === String(pageNum)) return;
+
+  const btn = taskTab.locator(`.ui-paginator-page[aria-label="Page ${pageNum}"]`).first();
+  if ((await btn.count()) > 0) {
+    await btn.click();
+  } else {
+    // Fallback: step forward with the next button until we reach the page.
+    for (let k = 0; k < pageNum + 2; k++) {
+      if ((await activeText()) === String(pageNum)) break;
+      await taskTab.locator("a.ui-paginator-next").first().click().catch(() => {});
+      await taskTab.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
+    }
+  }
   await taskTab.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
-  await taskTab.locator('a[id*="ApproveRejectButton"]').first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
-  return true;
+  await taskTab
+    .locator('a[id*="ApproveRejectButton"]')
+    .first()
+    .waitFor({ state: "visible", timeout: 15000 })
+    .catch(() => {});
 }

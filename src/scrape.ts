@@ -3,7 +3,7 @@ import type { AppConfig } from "./config.js";
 import type { ClaimRecord } from "./types.js";
 import { JobStore } from "./jobs.js";
 import { createContext, ensureSession } from "./session.js";
-import { openTaskTab, openQueue, rowCount, goBackToList } from "./navigation.js";
+import { openTaskTab, openQueue, rowCount, goBackToList, pageCount, gotoPage } from "./navigation.js";
 import { extractClaimRecords, openClaim } from "./claims.js";
 import { withRetry } from "./util/retry.js";
 import { log } from "./logger.js";
@@ -41,47 +41,51 @@ export async function runScrape(
     const taskTab = await withRetry(() => openTaskTab(context, cfg), RETRY);
     const pending = await openQueue(taskTab, cfg);
     const limit = opts.limit ?? null;
+    const pages = await pageCount(taskTab);
+    jobs.setProgress(jobId, 0, limit ?? pending ?? 0);
 
-    const pageRows = await rowCount(taskTab, cfg);
-    const target = limit ? Math.min(limit, pageRows) : pageRows;
-    jobs.setProgress(jobId, 0, limit ?? pending ?? pageRows);
-
+    // Opening a claim replaces the list and BACK resets the paginator to page 1, so we
+    // explicitly navigate to each claim's page (1-based) before opening it.
     let processed = 0; // claims processed (not records)
-    for (let i = 0; i < target; i++) {
-      try {
-        // Opening a claim replaces the list; extract then go back for the next row.
-        await withRetry(() => openClaim(taskTab, cfg, i), RETRY);
-        const recs = await extractClaimRecords(taskTab);
-        results.push(...recs);
-      } catch (err) {
-        log.error("claim failed", { index: i, err: String(err) });
-        // Skip this claim; continue with the rest.
-      }
-      processed++;
-      jobs.setProgress(jobId, processed, limit ?? pending ?? pageRows);
-
-      if (i < target - 1) {
-        try {
-          await goBackToList(taskTab, cfg);
-        } catch (err) {
-          log.error("could not return to task list; stopping", { err: String(err) });
+    let stop = false;
+    for (let p = 1; p <= pages && !stop; p++) {
+      for (let i = 0; !stop; i++) {
+        if (limit && processed >= limit) {
+          stop = true;
           break;
+        }
+        // Re-assert the page (a prior BACK resets to page 1) and read the LIVE row count,
+        // so we never click a phantom index on a short last page.
+        await gotoPage(taskTab, p);
+        if (i >= (await rowCount(taskTab, cfg))) break; // page exhausted
+
+        let opened = false;
+        try {
+          await withRetry(() => openClaim(taskTab, cfg, i), RETRY);
+          opened = true;
+          const recs = await extractClaimRecords(taskTab);
+          results.push(...recs);
+        } catch (err) {
+          log.error("claim failed", { page: p, index: i, err: String(err) });
+        }
+        processed++;
+        jobs.setProgress(jobId, processed, limit ?? pending ?? 0);
+
+        // Only navigate back if a claim detail actually opened (a failed click leaves
+        // us on the list already).
+        if (opened) {
+          try {
+            await goBackToList(taskTab, cfg);
+          } catch (err) {
+            log.error("could not return to task list; stopping", { err: String(err) });
+            stop = true;
+          }
         }
       }
     }
 
-    // NOTE: only the first queue page (~14 rows) is processed. Paginating to the full
-    // pending set is a follow-up: opening a claim resets the list, so cross-page
-    // iteration must re-navigate to the right page after each BACK (verify live).
-    if (!limit && pending && pending > pageRows) {
-      log.warn("processed first page only; pagination across pages is a follow-up", {
-        processedRows: pageRows,
-        pending,
-      });
-    }
-
     jobs.markDone(jobId, results);
-    log.info("scrape done", { jobId, claims: processed, records: results.length });
+    log.info("scrape done", { jobId, claims: processed, records: results.length, pages });
   } catch (err) {
     log.error("scrape failed", { jobId, err: String(err) });
     jobs.markError(jobId, String(err));
