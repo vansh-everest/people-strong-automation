@@ -3,7 +3,7 @@ import type { AppConfig } from "./config.js";
 import type { ClaimRecord } from "./types.js";
 import { JobStore } from "./jobs.js";
 import { createContext, ensureSession } from "./session.js";
-import { openTaskTab, openQueue, rowCount, goBackToList, pageCount, gotoPage } from "./navigation.js";
+import { openTaskTab, openQueue, goBackToList, pageCount, gotoPage } from "./navigation.js";
 import { extractClaimRecords, openClaim } from "./claims.js";
 import { captureAttachments } from "./attachments.js";
 import { withRetry } from "./util/retry.js";
@@ -36,8 +36,13 @@ async function scrapeAt(
 ): Promise<ScrapeOutcome> {
   try {
     await gotoPage(taskTab, page);
-    // Reliable recheck after the page has settled — guards against a phantom index.
-    if (index >= (await rowCount(taskTab, cfg))) return "norow";
+    // Guard against a phantom index (a short last page, or a brief stale row over-count):
+    // require the specific row to actually become visible, else it's not a real claim.
+    try {
+      await taskTab.locator(cfg.selectors.TASK_LINK).nth(index).waitFor({ state: "visible", timeout: 4000 });
+    } catch {
+      return "norow";
+    }
     await withRetry(() => openClaim(taskTab, cfg, index), RETRY);
     const recs = await extractClaimRecords(taskTab);
     // Download attachments and attach by expense-head index (Max 1 per head). With a
@@ -53,6 +58,15 @@ async function scrapeAt(
     results.push(...recs);
     return "ok";
   } catch (err) {
+    // If the row no longer exists, this was a transient phantom (a stale paginator
+    // render briefly showed an extra row) — not a real claim. Treat as end-of-page,
+    // quietly, rather than a failure to retry.
+    const stillThere = await taskTab
+      .locator(cfg.selectors.TASK_LINK)
+      .nth(index)
+      .isVisible()
+      .catch(() => false);
+    if (!stillThere) return "norow";
     log.error("claim failed", { page, index, err: String(err) });
     return "fail";
   } finally {
