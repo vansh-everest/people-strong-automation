@@ -30,7 +30,9 @@ TASKS_ICON: ".mytasks_icon"
 QUEUE_TITLE_TEXT: "Reimbursement Claim Requests"
 TASK_LINK: "a[id*=ApproveRejectButton]"
 EXPENSE_HEAD_LINK: "a[id*=tableId]"
-ATTACHMENT_LINK: "a[id*=headAttachmentsList]"
+# Attachment download links live in the claim's PrimeFaces datalist
+# (multiDataforUpload:attachmentsList) as one <a> per file ("filename (size)").
+ATTACHMENT_LINK: '[id*="attachmentsList"] li a'
 TOTAL_CLAIMED_LABEL: "Total Claimed Amount:"
 # Opening a claim replaces the task list; this returns to it (the detail's "BACK").
 BACK_BUTTON: 'button[id*="cancel"]'

@@ -11,7 +11,6 @@ interface DetailDump {
   empName: string | null;
   totalClaimed: string | null;
   rows: Record<string, string | null>[];
-  attachments: { filename: string; href: string | null }[];
 }
 
 /**
@@ -69,26 +68,18 @@ export async function extractClaimRecords(taskTab: Page): Promise<ClaimRecord[]>
       }
     }
 
-    const attachments = Array.from(
-      document.querySelectorAll('a[id*="headAttachmentsList"], a[id*="Attachment"]')
-    )
-      .map((a) => ({ filename: (a.textContent || "").trim(), href: a.getAttribute("href") }))
-      .filter((a) => a.filename && !/upload/i.test(a.filename));
-
-    return { empCode, empName, totalClaimed, rows, attachments };
+    return { empCode, empName, totalClaimed, rows };
   });
 
   const totalClaimed = parseAmount(data.totalClaimed);
-  const att = data.attachments[0] ?? null;
 
+  // Attachments are downloaded separately (captureAttachments) and merged by the caller,
+  // because that needs Playwright actions (click → download), not a DOM read.
   const base = {
     employee_code: data.empCode,
     employee_name: data.empName,
     total_claimed_amount: totalClaimed,
-    // attachment_url is left null: PrimeFaces attachment downloads are session-bound
-    // POSTs, not durable URLs. Filename is captured when present; durable storage of
-    // the file bytes is a follow-up (see README).
-    attachment_filename: att?.filename ?? null,
+    attachment_filename: null as string | null,
     attachment_url: null as string | null,
   };
 
