@@ -15,6 +15,40 @@ export interface ScrapeDeps {
 
 const RETRY = { attempts: 3, baseDelayMs: 1000 };
 
+type ScrapeOutcome = "ok" | "fail" | "norow";
+
+/**
+ * Navigate to a claim's page, open it, extract its records (pushed into `results`), and
+ * return to the list. Returns:
+ *  - "ok"    extracted successfully
+ *  - "fail"  a real claim that errored (caller should retry it)
+ *  - "norow" the index doesn't exist on that page (e.g. a stale over-count on the short
+ *            last page) — not a real claim, so it must not be counted or retried.
+ * Always returns to the list (detail-aware BACK) so the caller can proceed.
+ */
+async function scrapeAt(
+  taskTab: import("playwright").Page,
+  cfg: AppConfig,
+  page: number,
+  index: number,
+  results: ClaimRecord[]
+): Promise<ScrapeOutcome> {
+  try {
+    await gotoPage(taskTab, page);
+    // Reliable recheck after the page has settled — guards against a phantom index.
+    if (index >= (await rowCount(taskTab, cfg))) return "norow";
+    await withRetry(() => openClaim(taskTab, cfg, index), RETRY);
+    const recs = await extractClaimRecords(taskTab);
+    results.push(...recs);
+    return "ok";
+  } catch (err) {
+    log.error("claim failed", { page, index, err: String(err) });
+    return "fail";
+  } finally {
+    await goBackToList(taskTab, cfg).catch(() => {});
+  }
+}
+
 /**
  * Full scrape: login → deeplink-bridge task tab → open the Reimbursement queue →
  * iterate task rows across pages → open each claim and extract its expense-head
@@ -48,44 +82,44 @@ export async function runScrape(
     // explicitly navigate to each claim's page (1-based) before opening it.
     let processed = 0; // claims processed (not records)
     let stop = false;
+    let failed: { page: number; index: number }[] = [];
     for (let p = 1; p <= pages && !stop; p++) {
       for (let i = 0; !stop; i++) {
         if (limit && processed >= limit) {
           stop = true;
           break;
         }
-        // Re-assert the page (a prior BACK resets to page 1) and read the LIVE row count,
-        // so we never click a phantom index on a short last page.
-        await gotoPage(taskTab, p);
-        if (i >= (await rowCount(taskTab, cfg))) break; // page exhausted
-
-        let opened = false;
-        try {
-          await withRetry(() => openClaim(taskTab, cfg, i), RETRY);
-          opened = true;
-          const recs = await extractClaimRecords(taskTab);
-          results.push(...recs);
-        } catch (err) {
-          log.error("claim failed", { page: p, index: i, err: String(err) });
-        }
+        const outcome = await scrapeAt(taskTab, cfg, p, i, results);
+        if (outcome === "norow") break; // page exhausted
+        if (outcome === "fail") failed.push({ page: p, index: i });
         processed++;
         jobs.setProgress(jobId, processed, limit ?? pending ?? 0);
-
-        // Only navigate back if a claim detail actually opened (a failed click leaves
-        // us on the list already).
-        if (opened) {
-          try {
-            await goBackToList(taskTab, cfg);
-          } catch (err) {
-            log.error("could not return to task list; stopping", { err: String(err) });
-            stop = true;
-          }
-        }
       }
     }
 
+    // Retry pass: re-scrape any claims that failed in the main pass. The queue is
+    // unchanged (we never approve/reject), so (page, index) still identifies the claim.
+    for (let round = 1; failed.length && round <= 2; round++) {
+      log.info("retry pass for failed claims", { round, count: failed.length });
+      const stillFailed: { page: number; index: number }[] = [];
+      for (const pos of failed) {
+        const outcome = await scrapeAt(taskTab, cfg, pos.page, pos.index, results);
+        if (outcome === "fail") stillFailed.push(pos); // "ok"/"norow" → drop
+      }
+      failed = stillFailed;
+    }
+    if (failed.length) {
+      log.warn("claims still failing after retries", { count: failed.length, failed });
+    }
+
     jobs.markDone(jobId, results);
-    log.info("scrape done", { jobId, claims: processed, records: results.length, pages });
+    log.info("scrape done", {
+      jobId,
+      claims: processed,
+      records: results.length,
+      stillFailed: failed.length,
+      pages,
+    });
   } catch (err) {
     log.error("scrape failed", { jobId, err: String(err) });
     jobs.markError(jobId, String(err));

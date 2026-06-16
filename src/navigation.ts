@@ -94,18 +94,23 @@ export async function rowCount(taskTab: Page, cfg: AppConfig): Promise<number> {
 }
 
 /**
- * Return from a claim-detail view to the task list. Opening a claim replaces the list,
- * so this clicks the detail's BACK button and waits for the task rows to re-render.
+ * Ensure we are on the task list. Opening a claim replaces the list with a detail view
+ * whose BACK button returns to it. This is detail-aware: it only clicks BACK if the
+ * detail is actually showing (so it's cheap and safe to call even when a row click
+ * failed and we never left the list).
  */
 export async function goBackToList(taskTab: Page, cfg: AppConfig): Promise<void> {
   const back = taskTab.locator(cfg.selectors.BACK_BUTTON).first();
-  await back.waitFor({ state: "visible", timeout: 15000 });
-  await back.click();
-  await taskTab.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+  const onDetail = await back.isVisible().catch(() => false);
+  if (onDetail) {
+    await back.click().catch(() => {});
+    await taskTab.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
+  }
   await taskTab
     .locator(cfg.selectors.TASK_LINK)
     .first()
-    .waitFor({ state: "visible", timeout: 15000 });
+    .waitFor({ state: "visible", timeout: 15000 })
+    .catch(() => {});
 }
 
 /** Number of pages in the task-table paginator (≥ 1). */
