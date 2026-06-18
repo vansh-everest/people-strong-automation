@@ -80,7 +80,31 @@ async function scrapeAt(
  * records → accumulate into the job's results (flat ClaimRecord[]).
  * One bad claim never aborts the job. `limit` caps the number of CLAIMS processed.
  */
+/**
+ * Run a scrape with a hard ceiling. If the browser/scrape hangs (e.g. Chromium OOM on
+ * an under-provisioned host), the job is marked error and this resolves so the caller's
+ * single-job lock is released — instead of hanging "running" forever and 409-ing every
+ * future request. Tune with JOB_TIMEOUT_MS (default 15 min).
+ */
 export async function runScrape(
+  jobId: string,
+  opts: { stageFilter: string | null; limit: number | null },
+  deps: ScrapeDeps
+): Promise<void> {
+  const ms = Number(process.env.JOB_TIMEOUT_MS ?? 900000);
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<"__timeout__">((resolve) => {
+    timer = setTimeout(() => resolve("__timeout__"), ms);
+  });
+  const outcome = await Promise.race([scrapeJob(jobId, opts, deps).then(() => "__done__" as const), timeout]);
+  if (timer) clearTimeout(timer);
+  if (outcome === "__timeout__") {
+    log.error("scrape hard-timeout", { jobId, ms });
+    deps.jobs.markError(jobId, `scrape timed out after ${ms}ms (host may be under-provisioned for Chromium)`);
+  }
+}
+
+async function scrapeJob(
   jobId: string,
   opts: { stageFilter: string | null; limit: number | null },
   deps: ScrapeDeps
