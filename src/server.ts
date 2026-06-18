@@ -62,6 +62,28 @@ export function buildApp(deps: AppDeps) {
   return app;
 }
 
+/**
+ * Keep-alive: periodically hit our own public /health so the host doesn't idle the
+ * service out. On Render, RENDER_EXTERNAL_URL is injected automatically; override with
+ * KEEPALIVE_URL, tune the interval with KEEPALIVE_MS (default 10 min), or disable by
+ * setting KEEPALIVE_MS=0.
+ */
+function startKeepAlive(): void {
+  const base = (process.env.KEEPALIVE_URL || process.env.RENDER_EXTERNAL_URL || "").replace(/\/+$/, "");
+  const ms = Number(process.env.KEEPALIVE_MS ?? 600000);
+  if (!base || !Number.isFinite(ms) || ms <= 0) {
+    log.info("keepalive disabled", { hasUrl: !!base, ms });
+    return;
+  }
+  const url = `${base}/health`;
+  log.info("keepalive enabled", { url, ms });
+  setInterval(() => {
+    fetch(url)
+      .then((r) => log.info("keepalive ping", { status: r.status }))
+      .catch((e) => log.warn("keepalive failed", { err: String(e) }));
+  }, ms);
+}
+
 /** Production entrypoint. */
 export function start() {
   const cfg = loadConfig(process.env.CONFIG_PATH ?? "./config/peoplestrong.yml", process.env);
@@ -75,7 +97,10 @@ export function start() {
   });
 
   const port = Number(process.env.PORT ?? 8080);
-  app.listen(port, () => log.info("worker listening", { port }));
+  app.listen(port, () => {
+    log.info("worker listening", { port });
+    startKeepAlive();
+  });
 }
 
 // Start only when run directly (not when imported by tests).
