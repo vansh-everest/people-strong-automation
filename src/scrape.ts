@@ -5,7 +5,6 @@ import { JobStore } from "./jobs.js";
 import { createContext, ensureSession } from "./session.js";
 import { openTaskTab, openQueue, goBackToList, pageCount, gotoPage } from "./navigation.js";
 import { extractClaimRecords, openClaim } from "./claims.js";
-import { captureAttachments } from "./attachments.js";
 import { withRetry } from "./util/retry.js";
 import { log } from "./logger.js";
 
@@ -44,17 +43,9 @@ async function scrapeAt(
       return "norow";
     }
     await withRetry(() => openClaim(taskTab, cfg, index), RETRY);
-    const recs = await extractClaimRecords(taskTab);
-    // Download attachments and attach by expense-head index (Max 1 per head). With a
-    // single file it lands on the first record; extra files map 1:1 by position.
-    const atts = await captureAttachments(taskTab, cfg);
-    recs.forEach((r, k) => {
-      const a = atts[k];
-      if (a) {
-        r.attachment_filename = a.filename;
-        r.attachment_url = a.dataUrl;
-      }
-    });
+    // extractClaimRecords now opens each expense-head modal to read vendor/dates/payment
+    // mode and capture that head's attachment, so no separate attachment pass is needed.
+    const recs = await extractClaimRecords(taskTab, cfg);
     results.push(...recs);
     return "ok";
   } catch (err) {
