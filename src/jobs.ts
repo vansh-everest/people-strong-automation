@@ -42,6 +42,12 @@ export class JobStore {
     }
   }
 
+  /** Publish partial results while still running, so GET /job streams rows as they arrive. */
+  setResults(id: string, results: ClaimRecord[]): void {
+    const j = this.jobs.get(id);
+    if (j && j.status === "running") j.results = [...results];
+  }
+
   markDone(id: string, results: ClaimRecord[]): void {
     const j = this.jobs.get(id);
     if (j) {

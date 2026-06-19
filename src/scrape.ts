@@ -134,6 +134,7 @@ async function scrapeJob(
         if (outcome === "fail") failed.push({ page: p, index: i });
         processed++;
         jobs.setProgress(jobId, processed, limit ?? pending ?? 0);
+        jobs.setResults(jobId, results); // stream rows as they arrive
       }
     }
 
